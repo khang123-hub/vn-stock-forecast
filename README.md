@@ -68,6 +68,7 @@ streamlit run app.py
   - Đánh giá XGBoost Classifier: Accuracy, Precision, Recall, F1-Score, ROC-AUC.
   - Biểu đồ đường Giá Thực tế vs Giá Dự báo trên tập Test.
   - Xếp hạng Top 12 Đặc trưng Kỹ thuật có trọng số quan trọng nhất (Feature Importance).
+  - **Mục mở rộng (Auto-Tune & Drift) [MỚI]:** Hiển thị bộ siêu tham số tốt nhất vừa dò tìm (`RandomizedSearchCV` + `TimeSeriesSplit`), Ngưỡng xác suất tối ưu gợi ý (`Auto-Threshold Calibration`), và Thống kê Đánh giá độ trôi mô hình (`Model Drift`) trong 20 phiên gần nhất kèm cảnh báo Regime Shift.
 - **Tab 3: Backtest Chiến lược Định lượng (T+2.5):**
   - Mô phỏng chu kỳ nắm giữ $N$ phiên, trừ phí $0.15\%$ mỗi chiều (tương đương $0.3\%$ vòng quay).
   - So sánh trực tiếp Đường cong vốn (Equity Curve) giữa **AI Strategy** và **Buy & Hold**.

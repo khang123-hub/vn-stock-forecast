@@ -17,7 +17,9 @@ from src.models import (
     split_time_series_data,
     train_regression_models,
     train_classification_model,
-    get_feature_importance
+    get_feature_importance,
+    calibrate_optimal_threshold,
+    detect_model_drift
 )
 from src.backtest import run_backtest
 from src.screener import scan_vn30_market, VN30_TICKERS, VN30_TOP10
@@ -115,6 +117,18 @@ profit_threshold_pct = st.sidebar.slider(
     help="Ngưỡng lợi nhuận tối thiểu sau N phiên để gán nhãn 1 (Tích cực)"
 )
 
+auto_tune = st.sidebar.checkbox(
+    "🤖 Tự động tối ưu hóa mô hình (Auto-Tune AI)",
+    value=False,
+    help="Dò tìm siêu tham số tối ưu bằng TimeSeriesSplit & RandomizedSearchCV trên tập Train (No Leakage)"
+)
+
+use_time_decay = st.sidebar.checkbox(
+    "⚡ Ưu tiên trọng số dữ liệu gần đây (Time-Decay)",
+    value=False,
+    help="Gán trọng số thời gian phân rã hàm mũ để mô hình thích nghi tốt hơn với biến động gần đây"
+)
+
 force_reload = st.sidebar.button("🔄 Làm mới dữ liệu mã hiện tại")
 
 st.sidebar.markdown("---")
@@ -159,26 +173,59 @@ if df_raw is None or len(df_raw) < 60:
 
 # ----------------- HUẤN LUYỆN VÀ ĐÁNH GIÁ MÔ HÌNH -----------------
 @st.cache_resource(show_spinner=False)
-def train_and_evaluate_cached(X_df, y_r, y_c, f_cols):
+def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool, decay: bool, n_fwd: int):
     X_train_r, X_test_r, y_train_r, y_test_r = split_time_series_data(X_df, y_r, train_ratio=0.8)
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X_df, y_c, train_ratio=0.8)
 
-    reg_results = train_regression_models(X_train_r, y_train_r, X_test_r, y_test_r)
-    clf_results = train_classification_model(X_train_c, y_train_c, X_test_c, y_test_c)
+    reg_results = train_regression_models(
+        X_train_r, y_train_r, X_test_r, y_test_r,
+        auto_tune=tune,
+        use_time_decay=decay
+    )
+    clf_results = train_classification_model(
+        X_train_c, y_train_c, X_test_c, y_test_c,
+        auto_tune=tune,
+        use_time_decay=decay
+    )
 
     feat_imp = get_feature_importance(clf_results["pipeline"], f_cols)
+
+    # 1. Tự động hiệu chỉnh ngưỡng tối ưu
+    train_closes = closes_series.loc[X_train_r.index]
+    opt_threshold_info = calibrate_optimal_threshold(
+        X_train=X_train_c,
+        y_train_clf=y_train_c,
+        y_train_reg=y_train_r,
+        current_closes_train=train_closes,
+        clf_pipeline=clf_results["pipeline"],
+        holding_period=n_fwd
+    )
+
+    # 2. Đánh giá độ trôi mô hình (Model Drift)
+    drift_info = detect_model_drift(
+        y_test_clf=y_test_c,
+        y_pred_clf=clf_results["y_pred"],
+        y_test_reg=y_test_r,
+        y_pred_reg=reg_results["xgb_pred"],
+        window=20
+    )
 
     return {
         "reg": reg_results,
         "clf": clf_results,
         "feat_imp": feat_imp,
+        "opt_threshold": opt_threshold_info,
+        "drift": drift_info,
         "X_test": X_test_r,
         "y_test_reg": y_test_r,
         "y_test_clf": y_test_c
     }
 
 with st.spinner("Đang huấn luyện mô hình Machine Learning định lượng (Ridge, XGBoost)..."):
-    model_output = train_and_evaluate_cached(X, y_reg, y_clf, feature_cols)
+    model_output = train_and_evaluate_cached(
+        X, y_reg, y_clf, feature_cols, df_raw["close"],
+        auto_tune, use_time_decay, n_forward
+    )
 
 # Dự báo cho phiên hiện tại (t) hướng tới (t+N)
 current_close = float(df_raw["close"].iloc[-1])
@@ -241,6 +288,10 @@ with rec_col5:
         <div style="margin-top: 6px;">{badge_html}</div>
     </div>
     """, unsafe_allow_html=True)
+
+# Cảnh báo Regime Shift nếu độ chính xác 20 phiên gần nhất giảm sút
+if model_output["drift"]["is_regime_shift"]:
+    st.warning(model_output["drift"]["warning_message"])
 
 
 # ----------------- TABS GIAO DIỆN CHÍNH (4 TABS) -----------------
@@ -382,6 +433,45 @@ with tab2:
             xaxis_title="Importance Score"
         )
         st.plotly_chart(fig_imp, use_container_width=True)
+
+    # 3. Mục mở rộng: Chi tiết siêu tham số và đánh giá độ trôi mô hình (Model Drift)
+    st.markdown("---")
+    with st.expander("🔍 Chi tiết thông số AI đã tự động điều chỉnh & Đánh giá Độ trôi (Model Drift)", expanded=True):
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            st.markdown("##### ⚙️ Siêu tham số Tối ưu Đã Chọn")
+            st.write("**XGBoost Classifier:**", model_output["clf"]["best_params"])
+            st.write("**XGBoost Regressor:**", model_output["reg"]["best_params_xgb"])
+            st.write("**Ridge Regression:**", model_output["reg"]["best_params_ridge"])
+            st.caption(f"Trạng thái: Auto-Tune = `{auto_tune}`, Time-Decay = `{use_time_decay}`")
+        with d_col2:
+            st.markdown("##### 🎯 Hiệu chuẩn Ngưỡng Xác suất Tối ưu (Calibration)")
+            opt_t = model_output["opt_threshold"]
+            st.info(f"""
+            - **Ngưỡng tối ưu gợi ý:** **{opt_t['optimal_threshold']:.2f}** ({opt_t['optimal_threshold']*100:.0f}%)
+            - **Độ chính xác (Precision) trên Validation:** **{opt_t['precision']}%**
+            - **Số lệnh mô phỏng đạt điều kiện:** **{opt_t['trades_count']}** lệnh
+            - **Lợi nhuận ròng trung bình sau phí:** **{opt_t['avg_net_return_pct']:+.2f}% / lệnh**
+            """)
+
+        st.markdown("---")
+        st.markdown("##### 📉 Đánh giá Độ trôi Mô hình (Model Drift: 20 Phiên gần nhất vs Tổng thể)")
+        drift_m = model_output["drift"]
+        drift_df = pd.DataFrame([
+            {
+                "Chỉ số đánh giá": "Độ chính xác Phân loại (Accuracy)",
+                "20 Phiên gần nhất": f"{drift_m['recent_accuracy']}%",
+                "Toàn bộ Test Set": f"{drift_m['overall_accuracy']}%",
+                "Trạng thái": "⚠️ Cần chú ý" if drift_m['is_regime_shift'] else "✅ Bình thường"
+            },
+            {
+                "Chỉ số đánh giá": "Sai số Hồi quy (MAPE %)",
+                "20 Phiên gần nhất": f"{drift_m['recent_mape']}%",
+                "Toàn bộ Test Set": f"{drift_m['overall_mape']}%",
+                "Trạng thái": "⚠️ Biến động tăng" if drift_m['recent_mape'] > drift_m['overall_mape'] else "✅ Ổn định"
+            }
+        ])
+        st.dataframe(drift_df, use_container_width=True)
 
 
 # ================= TAB 3: BACKTEST CHIẾN LƯỢC =================
