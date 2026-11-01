@@ -27,11 +27,14 @@ vn-stock-forecast/
 
 ---
 
-## ⚡ Các Quy tắc Chống Rò rỉ Dữ liệu (No Data Leakage)
+## ⚡ Các Quy tắc Chống Rò rỉ Dữ liệu & Chuẩn Quantitative Finance
 1. **Chronological Split:** Phân tách dữ liệu theo thứ tự thời gian (`shuffle=False`), 80% thời gian đầu dùng cho Train và 20% thời gian sau dùng cho Test.
 2. **Feature Engineering an toàn:** Mọi chỉ báo kỹ thuật (SMA, EMA, MACD, RSI, Bollinger, ATR, Stoch, ROC, Volume Ratio, Return Lags) tại ngày $t$ chỉ được tính toán từ các phiên $\le t$.
-3. **Target Shift chuẩn xác:** Biến mục tiêu dự báo $N$ phiên sau được tạo bằng `.shift(-N)` và tách riêng phiên mới nhất $t$ để dự báo thực tế phiên kế tiếp mà không làm rò rỉ nhãn vào quá khứ.
-4. **StandardScaler Pipeline:** Bộ chuẩn hóa dữ liệu được đóng gói trong `sklearn.pipeline.Pipeline`, **chỉ fit trên tập Train** và transform Test.
+3. **Target Shift chuẩn Forward Return:** Biến mục tiêu Hồi quy sử dụng tỷ suất sinh lời kỳ vọng $N$ phiên sau:
+   $$\text{target\_return} = \frac{\text{close}_{t+N} - \text{close}_t}{\text{close}_t}$$
+   Loại bỏ hoàn toàn lỗi ngoại suy giá (Extrapolation issue) của các mô hình dạng cây khi dự báo giá tuyệt đối. Mức giá mục tiêu được tính nhất quán: $\text{predicted\_price} = \text{current\_price} \times (1 + \text{pred\_return})$.
+4. **Quy tắc Đồng thuận Nghiêm ngặt (Strict Consensus Rule):** Chỉ đưa ra tín hiệu MUA khi ĐỒNG THỜI xác suất tăng $\ge \text{Threshold}$ và lợi nhuận kỳ vọng $\ge \text{Min Return} > 0\%$. Nếu xác suất cao nhưng kỳ vọng âm hoặc chưa đạt mục tiêu, hệ thống kích hoạt cảnh báo **`⚖️ TÍN HIỆU PHÂN KỲ (QUAN SÁT)`**.
+5. **StandardScaler Pipeline:** Bộ chuẩn hóa dữ liệu được đóng gói trong `sklearn.pipeline.Pipeline`, **chỉ fit trên tập Train** và transform Test.
 
 ---
 

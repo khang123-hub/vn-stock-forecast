@@ -40,8 +40,10 @@ def main():
     # 1. Huấn luyện Hồi quy với auto_tune=True & use_time_decay=True
     print("\n[2] Huấn luyện Regression với auto_tune=True & use_time_decay=True...")
     t0 = time.time()
+    test_closes = df.loc[X_test_r.index, "close"]
     reg_res = train_regression_models(
         X_train_r, y_train_r, X_test_r, y_test_r,
+        current_closes_test=test_closes,
         auto_tune=True,
         use_time_decay=True
     )

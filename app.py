@@ -19,7 +19,8 @@ from src.models import (
     train_classification_model,
     get_feature_importance,
     calibrate_optimal_threshold,
-    detect_model_drift
+    detect_model_drift,
+    determine_consensus_signal
 )
 from src.backtest import run_backtest
 from src.screener import scan_vn30_market, VN30_TICKERS, VN30_TOP10
@@ -177,8 +178,11 @@ def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool,
     X_train_r, X_test_r, y_train_r, y_test_r = split_time_series_data(X_df, y_r, train_ratio=0.8)
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X_df, y_c, train_ratio=0.8)
 
+    test_closes = closes_series.loc[X_test_r.index]
+
     reg_results = train_regression_models(
         X_train_r, y_train_r, X_test_r, y_test_r,
+        current_closes_test=test_closes,
         auto_tune=tune,
         use_time_decay=decay
     )
@@ -206,7 +210,7 @@ def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool,
         y_test_clf=y_test_c,
         y_pred_clf=clf_results["y_pred"],
         y_test_reg=y_test_r,
-        y_pred_reg=reg_results["xgb_pred"],
+        y_pred_reg=reg_results["xgb_pred_return"],
         window=20
     )
 
@@ -232,12 +236,26 @@ current_close = float(df_raw["close"].iloc[-1])
 current_date = df_raw["date"].iloc[-1].strftime("%d/%m/%Y")
 
 latest_features = latest_row[feature_cols]
-pred_price_ridge = float(model_output["reg"]["ridge_pipeline"].predict(latest_features)[0])
-pred_price_xgb = float(model_output["reg"]["xgb_pipeline"].predict(latest_features)[0])
-pred_prob_up = float(model_output["clf"]["pipeline"].predict_proba(latest_features)[0, 1])
 
-exp_pct_change = ((pred_price_xgb / current_close) - 1.0) * 100.0
-is_buy_signal = pred_prob_up >= prob_threshold
+# Dự báo tỷ suất sinh lời kỳ vọng (Forward Return)
+pred_return_ridge = float(model_output["reg"]["ridge_pipeline"].predict(latest_features)[0])
+pred_return_xgb = float(model_output["reg"]["xgb_pipeline"].predict(latest_features)[0])
+
+# Quy đổi tỷ suất sinh lời sang mức giá mục tiêu: predicted_price = current_price * (1 + pred_return)
+pred_price_ridge = current_close * (1.0 + pred_return_ridge)
+pred_price_xgb = current_close * (1.0 + pred_return_xgb)
+
+pred_prob_up = float(model_output["clf"]["pipeline"].predict_proba(latest_features)[0, 1])
+exp_pct_change = pred_return_xgb * 100.0
+
+# Áp dụng Quy tắc Đồng thuận Nghiêm ngặt (Strict Consensus Rule)
+consensus = determine_consensus_signal(
+    prob_up=pred_prob_up,
+    exp_return_pct=exp_pct_change,
+    prob_threshold=prob_threshold,
+    min_return_pct=profit_threshold_pct
+)
+is_buy_signal = consensus["is_buy"]
 
 
 # ----------------- HỘP KHUYẾN NGHỊ NỔI BẬT ĐẦU TRANG -----------------
@@ -281,7 +299,13 @@ with rec_col4:
     """, unsafe_allow_html=True)
 
 with rec_col5:
-    badge_html = f'<div class="badge-buy">🚀 KHUYẾN NGHỊ: MUA</div>' if is_buy_signal else f'<div class="badge-hold">⏳ QUAN SÁT / CHỜ</div>'
+    if consensus["signal_type"] in ["BUY_STRONG", "BUY"]:
+        badge_html = f'<div class="badge-buy">{consensus["signal_badge"]}</div>'
+    elif consensus["signal_type"] == "DIVERGENCE":
+        badge_html = f'<div style="background-color: #713f12; color: #fde047; padding: 8px 14px; border-radius: 9999px; font-weight: 700; font-size: 0.92rem; display: inline-block; border: 1px solid #eab308;">{consensus["signal_badge"]}</div>'
+    else:
+        badge_html = f'<div class="badge-hold">{consensus["signal_badge"]}</div>'
+
     st.markdown(f"""
     <div class="metric-card" style="text-align: center;">
         <div class="metric-title">Tín hiệu AI (Ngưỡng {prob_threshold*100:.0f}%)</div>
@@ -397,7 +421,7 @@ with tab2:
         st.markdown(f"#### Biểu đồ Giá Thực tế vs Giá Dự báo trên tập Test ({n_forward} phiên)")
         test_indices = model_output["X_test"].index
         test_dates = df_raw.loc[test_indices, "date"]
-        actual_prices = model_output["y_test_reg"].values
+        actual_prices = model_output["reg"]["y_test_price"]
         pred_ridge = model_output["reg"]["ridge_pred"]
         pred_xgb = model_output["reg"]["xgb_pred"]
 

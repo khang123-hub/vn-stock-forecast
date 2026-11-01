@@ -17,7 +17,8 @@ from src.models import (
     split_time_series_data,
     train_regression_models,
     train_classification_model,
-    get_feature_importance
+    get_feature_importance,
+    determine_consensus_signal
 )
 from src.backtest import run_backtest
 
@@ -51,10 +52,14 @@ def main():
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X, y_clf, train_ratio=0.8)
     print(f"-> Train samples: {len(X_train_r)}, Test samples: {len(X_test_r)}")
 
-    # 4. Huấn luyện & So sánh Mô hình Hồi quy
-    print("\n[Bước 4/6] Huấn luyện Mô hình Hồi quy (Ridge vs XGBoost Regressor)...")
-    reg_results = train_regression_models(X_train_r, y_train_r, X_test_r, y_test_r)
-    print("BẢNG SO SÁNH CHỈ SỐ HỒI QUY TRÊN TEST SET:")
+    # 4. Huấn luyện & So sánh Mô hình Hồi quy trên Forward Return
+    print("\n[Bước 4/6] Huấn luyện Mô hình Hồi quy trên Forward Return...")
+    test_closes = df.loc[X_test_r.index, "close"]
+    reg_results = train_regression_models(
+        X_train_r, y_train_r, X_test_r, y_test_r,
+        current_closes_test=test_closes
+    )
+    print("BẢNG SO SÁNH CHỈ SỐ HỒI QUY TRÊN TEST SET (QUY ĐỔI GIÁ):")
     print(reg_results["comparison_df"].to_string(index=False))
 
     # 5. Huấn luyện Mô hình Phân loại
@@ -91,15 +96,24 @@ def main():
     print("🔮 KẾT QUẢ DỰ BÁO CHO PHIÊN TIẾP THEO:")
     curr_close = float(df["close"].iloc[-1])
     latest_feat = latest_row[feature_cols]
-    pred_xgb_price = float(reg_results["xgb_pipeline"].predict(latest_feat)[0])
+
+    pred_xgb_return = float(reg_results["xgb_pipeline"].predict(latest_feat)[0])
+    pred_xgb_price = curr_close * (1.0 + pred_xgb_return)
     pred_up_prob = float(clf_results["pipeline"].predict_proba(latest_feat)[0, 1])
-    exp_change = ((pred_xgb_price / curr_close) - 1.0) * 100.0
+    exp_change = pred_xgb_return * 100.0
+
+    consensus = determine_consensus_signal(
+        prob_up=pred_up_prob,
+        exp_return_pct=exp_change,
+        prob_threshold=0.55,
+        min_return_pct=profit_threshold * 100.0
+    )
 
     print(f"  * Giá đóng cửa hiện tại: {curr_close:,.0f} đ")
-    print(f"  * Giá dự báo sau {n_forward} phiên: {pred_xgb_price:,.0f} đ ({exp_change:+.2f}%)")
+    print(f"  * Tỷ suất sinh lời kỳ vọng: {exp_change:+.2f}%")
+    print(f"  * Giá dự báo sau {n_forward} phiên: {pred_xgb_price:,.0f} đ")
     print(f"  * Xác suất tăng giá > {profit_threshold*100:.1f}%: {pred_up_prob*100:.1f}%")
-    rec_signal = "🚀 MUA" if pred_up_prob >= 0.55 else "⏳ QUAN SÁT"
-    print(f"  * KHUYẾN NGHỊ: {rec_signal}")
+    print(f"  * KHUYẾN NGHỊ (Strict Consensus): {consensus['signal_badge']}")
     print("=" * 65)
     print("\n✅ KIỂM THỬ PIPELINE HOÀN TẤT THÀNH CÔNG VÀ KHÔNG CÓ LỖI!")
 

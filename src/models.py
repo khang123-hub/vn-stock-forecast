@@ -62,18 +62,67 @@ def compute_time_decay_weights(n_samples: int, half_life_ratio: float = 0.5) -> 
     return weights
 
 
+def determine_consensus_signal(
+    prob_up: float,
+    exp_return_pct: float,
+    prob_threshold: float = 0.55,
+    min_return_pct: float = 1.5
+) -> Dict[str, Any]:
+    """
+    Quy tắc Đồng thuận Nghiêm ngặt (Strict Consensus Rule):
+    - MUA MẠNH: Xác suất >= 65% VÀ Lợi nhuận kỳ vọng >= max(2.0%, min_return_pct)
+    - MUA: Xác suất >= Threshold VÀ Lợi nhuận kỳ vọng >= min_return_pct VÀ exp_return_pct > 0%
+    - TÍN HIỆU PHÂN KỲ: Xác suất >= Threshold NHƯNG Lợi nhuận kỳ vọng < 0% hoặc < min_return_pct (QUAN SÁT)
+    - QUAN SÁT / CHỜ: Xác suất < Threshold
+    """
+    prob_val = float(prob_up)
+    ret_val = float(exp_return_pct)
+    p_thresh = float(prob_threshold)
+    m_ret = float(min_return_pct)
+
+    if prob_val >= 0.65 and ret_val >= max(2.0, m_ret):
+        badge = "🚀 KHUYẾN NGHỊ: MUA MẠNH"
+        short = "🚀 MUA MẠNH"
+        sig_type = "BUY_STRONG"
+        is_buy = True
+    elif prob_val >= p_thresh and ret_val >= m_ret and ret_val > 0.0:
+        badge = "🚀 KHUYẾN NGHỊ: MUA"
+        short = "✅ MUA"
+        sig_type = "BUY"
+        is_buy = True
+    elif prob_val >= p_thresh and (ret_val < 0.0 or ret_val < m_ret):
+        badge = "⚖️ TÍN HIỆU PHÂN KỲ (QUAN SÁT)"
+        short = "⚖️ PHÂN KỲ (CHỜ)"
+        sig_type = "DIVERGENCE"
+        is_buy = False
+    else:
+        badge = "⏳ QUAN SÁT / CHỜ"
+        short = "⏳ QUAN SÁT"
+        sig_type = "HOLD"
+        is_buy = False
+
+    return {
+        "signal_badge": badge,
+        "signal_short": short,
+        "signal_type": sig_type,
+        "is_buy": is_buy
+    }
+
+
 def train_regression_models(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    current_closes_test: Optional[pd.Series] = None,
     auto_tune: bool = False,
     use_time_decay: bool = False
 ) -> Dict[str, Any]:
     """
-    Huấn luyện và so sánh các mô hình Hồi quy: Ridge vs XGBoost Regressor.
-    Hỗ trợ auto_tune (TimeSeriesSplit + RandomizedSearchCV) và time decay weights.
-    Chỉ chạy fit trên Train 80%, không chạm vào Test 20%.
+    Huấn luyện và so sánh các mô hình Hồi quy trên biến mục tiêu Forward Return:
+    - Ridge Regression
+    - XGBoost Regressor
+    Quy đổi về mức giá dự báo bằng công thức: predicted_price = current_price * (1 + pred_return).
     """
     sample_weights = compute_time_decay_weights(len(X_train)) if use_time_decay else None
 
@@ -110,7 +159,7 @@ def train_regression_models(
             fit_kwargs["model__sample_weight"] = sample_weights
         ridge_pipeline.fit(X_train, y_train, **fit_kwargs)
 
-    ridge_pred = ridge_pipeline.predict(X_test)
+    ridge_pred_return = ridge_pipeline.predict(X_test)
 
     # 2. Pipeline XGBoost Regressor
     xgb_reg_pipeline = Pipeline([
@@ -165,17 +214,34 @@ def train_regression_models(
             fit_kwargs["model__sample_weight"] = sample_weights
         xgb_reg_pipeline.fit(X_train, y_train, **fit_kwargs)
 
-    xgb_pred = xgb_reg_pipeline.predict(X_test)
+    xgb_pred_return = xgb_reg_pipeline.predict(X_test)
 
-    def calc_reg_metrics(y_true, y_hat):
-        mae = mean_absolute_error(y_true, y_hat)
+    # Quy đổi sang giá (Predicted Price) nếu có dữ liệu giá đóng cửa tại t
+    if current_closes_test is not None:
+        closes_arr = current_closes_test.values
+        y_test_price = closes_arr * (1.0 + y_test.values)
+        ridge_pred_price = closes_arr * (1.0 + ridge_pred_return)
+        xgb_pred_price = closes_arr * (1.0 + xgb_pred_return)
+        eval_true = y_test_price
+        eval_ridge = ridge_pred_price
+        eval_xgb = xgb_pred_price
+    else:
+        y_test_price = y_test.values
+        ridge_pred_price = ridge_pred_return
+        xgb_pred_price = xgb_pred_return
+        eval_true = y_test.values
+        eval_ridge = ridge_pred_return
+        eval_xgb = xgb_pred_return
+
+    def calc_reg_metrics(y_t, y_h):
+        mae = mean_absolute_error(y_t, y_h)
         try:
             from sklearn.metrics import root_mean_squared_error
-            rmse = root_mean_squared_error(y_true, y_hat)
+            rmse = root_mean_squared_error(y_t, y_h)
         except ImportError:
-            rmse = float(np.sqrt(mean_squared_error(y_true, y_hat)))
-        mape = mean_absolute_percentage_error(y_true, y_hat) * 100.0
-        r2 = r2_score(y_true, y_hat)
+            rmse = float(np.sqrt(mean_squared_error(y_t, y_h)))
+        mape = mean_absolute_percentage_error(y_t, y_h) * 100.0
+        r2 = r2_score(y_t, y_h)
         return {
             "MAE": round(mae, 2),
             "RMSE": round(rmse, 2),
@@ -183,8 +249,8 @@ def train_regression_models(
             "R2": round(r2, 4)
         }
 
-    metrics_ridge = calc_reg_metrics(y_test, ridge_pred)
-    metrics_xgb = calc_reg_metrics(y_test, xgb_pred)
+    metrics_ridge = calc_reg_metrics(eval_true, eval_ridge)
+    metrics_xgb = calc_reg_metrics(eval_true, eval_xgb)
 
     comparison_df = pd.DataFrame([
         {"Mô hình": "Ridge Regression", **metrics_ridge},
@@ -194,8 +260,11 @@ def train_regression_models(
     return {
         "ridge_pipeline": ridge_pipeline,
         "xgb_pipeline": xgb_reg_pipeline,
-        "ridge_pred": ridge_pred,
-        "xgb_pred": xgb_pred,
+        "ridge_pred_return": ridge_pred_return,
+        "xgb_pred_return": xgb_pred_return,
+        "ridge_pred": ridge_pred_price,
+        "xgb_pred": xgb_pred_price,
+        "y_test_price": y_test_price,
         "metrics_ridge": metrics_ridge,
         "metrics_xgb": metrics_xgb,
         "comparison_df": comparison_df,
@@ -355,12 +424,10 @@ def calibrate_optimal_threshold(
         # Precision
         prec = precision_score(y_val_clf, signals.astype(int), zero_division=0)
 
-        # Lợi nhuận ròng trung bình của các lệnh kích hoạt
-        trade_entry_prices = closes_val[signals].values
-        trade_exit_prices = y_val_reg[signals].values
-        if len(trade_entry_prices) > 0:
-            gross_returns = (trade_exit_prices / trade_entry_prices) - 1.0
-            net_returns = gross_returns - (2 * fee_per_trade)
+        # Lợi nhuận ròng trung bình của các lệnh kích hoạt (y_val_reg là Forward Return)
+        trade_returns = y_val_reg[signals].values
+        if len(trade_returns) > 0:
+            net_returns = trade_returns - (2 * fee_per_trade)
             avg_net_ret = float(np.mean(net_returns)) * 100.0
         else:
             avg_net_ret = 0.0

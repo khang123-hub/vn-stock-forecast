@@ -14,7 +14,7 @@ from xgboost import XGBClassifier, XGBRegressor
 
 from src.data_loader import load_stock_data
 from src.features import compute_technical_indicators, prepare_features_and_targets
-from src.models import split_time_series_data
+from src.models import split_time_series_data, determine_consensus_signal
 
 # Danh sách 30 mã rổ VN30 chuẩn
 VN30_TICKERS = [
@@ -67,15 +67,14 @@ def analyze_single_ticker(
     X_train_r, X_test_r, y_train_r, y_test_r = split_time_series_data(X, y_reg, train_ratio=0.8)
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X, y_clf, train_ratio=0.8)
 
-    # 1. Pipeline Hồi quy (Ridge & XGBoost Regressor)
-    # Dùng Ridge để tính R2 chuẩn xác và XGBoost dự báo giá
+    # 1. Pipeline Hồi quy trên Forward Return
     ridge_pipe = Pipeline([
         ("scaler", StandardScaler()),
         ("model", Ridge(alpha=1.0, random_state=42))
     ])
     ridge_pipe.fit(X_train_r, y_train_r)
-    y_test_pred_ridge = ridge_pipe.predict(X_test_r)
-    r2_val = r2_score(y_test_r, y_test_pred_ridge)
+    y_test_pred_return = ridge_pipe.predict(X_test_r)
+    r2_val = r2_score(y_test_r, y_test_pred_return)
 
     xgb_reg_pipe = Pipeline([
         ("scaler", StandardScaler()),
@@ -105,21 +104,26 @@ def analyze_single_ticker(
     latest_features = latest_row[feature_cols]
     current_close = float(df["close"].iloc[-1])
 
-    pred_target_price = float(xgb_reg_pipe.predict(latest_features)[0])
-    exp_return_pct = ((pred_target_price / current_close) - 1.0) * 100.0
-    prob_up_pct = float(xgb_clf_pipe.predict_proba(latest_features)[0, 1]) * 100.0
+    # Dự báo tỷ suất sinh lời kỳ vọng và quy đổi ra giá mục tiêu
+    pred_return = float(xgb_reg_pipe.predict(latest_features)[0])
+    pred_target_price = current_close * (1.0 + pred_return)
+    exp_return_pct = pred_return * 100.0
+
+    prob_up = float(xgb_clf_pipe.predict_proba(latest_features)[0, 1])
+    prob_up_pct = prob_up * 100.0
 
     # Lấy chỉ số RSI tại phiên t
     rsi_val = float(latest_row["rsi_14"].iloc[-1]) if "rsi_14" in latest_row else 50.0
 
-    # Xác định khuyến nghị định lượng
-    threshold_pct = prob_threshold * 100.0
-    if prob_up_pct >= 65.0 and exp_return_pct > 2.0:
-        recommendation = "🚀 MUA MẠNH"
-    elif prob_up_pct >= threshold_pct:
-        recommendation = "✅ MUA"
-    else:
-        recommendation = "⏳ QUAN SÁT"
+    # Áp dụng Quy tắc Đồng thuận Nghiêm ngặt (Strict Consensus Rule)
+    sig_info = determine_consensus_signal(
+        prob_up=prob_up,
+        exp_return_pct=exp_return_pct,
+        prob_threshold=prob_threshold,
+        min_return_pct=profit_threshold_pct
+    )
+    recommendation = sig_info["signal_short"]
+    is_buy = sig_info["is_buy"]
 
     return {
         "Mã CP": symbol,
