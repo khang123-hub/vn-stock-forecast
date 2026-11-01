@@ -1,0 +1,12 @@
+# VN Stock Forecasting System Requirements
+# Python 3.14 on Windows compatible packages
+
+numpy
+pandas
+ta
+scikit-learn
+xgboost
+statsmodels
+yfinance
+plotly
+streamlit
