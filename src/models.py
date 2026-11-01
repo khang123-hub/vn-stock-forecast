@@ -109,6 +109,54 @@ def determine_consensus_signal(
     }
 
 
+def predict_latest(
+    reg_pipeline: Pipeline,
+    clf_pipeline: Pipeline,
+    latest_features: pd.DataFrame,
+    current_price: float,
+    horizon: int = 5,
+    prob_threshold: float = 0.55,
+    min_return_pct: float = 1.5
+) -> Dict[str, Any]:
+    """
+    Dự báo cho phiên hiện tại DUY NHẤT 1 LẦN tại src/models.py:
+    - Regressor dự báo tỷ suất sinh lời dạng số thập phân (pred_return).
+    - Giới hạn pred_return theo biên độ trần/sàn HOSE: [-0.07 * horizon, 0.07 * horizon].
+    - Tính predicted_price = round(current_price * (1.0 + pred_return), -1).
+    - Tính expected_return_pct = round(pred_return * 100.0, 2).
+    - Dự báo xác suất tăng giá prob_up từ Classifier.
+    - Xác định khuyến nghị theo Strict Consensus Rule.
+    """
+    # 1. Dự báo tỷ suất sinh lời dạng số thập phân (pred_return)
+    raw_return = float(reg_pipeline.predict(latest_features)[0])
+    max_return_limit = 0.07 * horizon
+    pred_return = float(np.clip(raw_return, -max_return_limit, max_return_limit))
+
+    # 2. Tính giá dự báo và % kỳ vọng duy nhất 1 lần
+    predicted_price = round(current_price * (1.0 + pred_return), -1)
+    expected_return_pct = round(pred_return * 100.0, 2)
+
+    # 3. Dự báo xác suất phân loại
+    prob_up = float(clf_pipeline.predict_proba(latest_features)[0, 1])
+
+    # 4. Xác định tín hiệu đồng thuận
+    consensus = determine_consensus_signal(
+        prob_up=prob_up,
+        exp_return_pct=expected_return_pct,
+        prob_threshold=prob_threshold,
+        min_return_pct=min_return_pct
+    )
+
+    return {
+        "pred_return": pred_return,
+        "expected_return_pct": expected_return_pct,
+        "predicted_price": predicted_price,
+        "prob_up": prob_up,
+        "prob_up_pct": round(prob_up * 100.0, 1),
+        "consensus": consensus
+    }
+
+
 def train_regression_models(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -159,7 +207,7 @@ def train_regression_models(
             fit_kwargs["model__sample_weight"] = sample_weights
         ridge_pipeline.fit(X_train, y_train, **fit_kwargs)
 
-    ridge_pred_return = ridge_pipeline.predict(X_test)
+    ridge_pred_return = np.clip(ridge_pipeline.predict(X_test), -0.35, 0.35)
 
     # 2. Pipeline XGBoost Regressor
     xgb_reg_pipeline = Pipeline([
@@ -214,7 +262,7 @@ def train_regression_models(
             fit_kwargs["model__sample_weight"] = sample_weights
         xgb_reg_pipeline.fit(X_train, y_train, **fit_kwargs)
 
-    xgb_pred_return = xgb_reg_pipeline.predict(X_test)
+    xgb_pred_return = np.clip(xgb_reg_pipeline.predict(X_test), -0.35, 0.35)
 
     # Quy đổi sang giá (Predicted Price) nếu có dữ liệu giá đóng cửa tại t
     if current_closes_test is not None:

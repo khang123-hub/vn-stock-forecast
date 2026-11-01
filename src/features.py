@@ -154,16 +154,12 @@ def prepare_features_and_targets(
         "return_lag1", "return_lag2"
     ]
 
-    # Tạo biến mục tiêu chuẩn Quantitative Finance (Forward Return)
-    # Tránh extrapolation issue của mô hình dạng cây khi dự báo giá tuyệt đối
-    future_close = df_feat["close"].shift(-n_forward)
-    future_return = (future_close - df_feat["close"]) / df_feat["close"]
-    # Giới hạn ngoại lai hợp lý (ví dụ: tối đa +/- 50% trong N phiên)
-    future_return = future_return.clip(lower=-0.5, upper=0.5)
-
-    df_feat["target_reg"] = future_return  # Tỷ suất sinh lời sau N phiên
-    df_feat["target_price"] = future_close # Giá đóng cửa sau N phiên
-    df_feat["target_clf"] = (future_return > profit_threshold).astype(int)
+    # Tạo biến mục tiêu Hồi quy BẮT BUỘC là Forward Return (dạng số thập phân)
+    horizon = n_forward
+    raw_return = (df_feat["close"].shift(-horizon) - df_feat["close"]) / df_feat["close"]
+    # Giới hạn (clip) trong khoảng [-0.35, 0.35] để loại bỏ các điểm dị biệt do chia tách cổ phiếu
+    df_feat["target_reg"] = raw_return.clip(-0.35, 0.35)
+    df_feat["target_clf"] = (df_feat["target_reg"] > profit_threshold).astype(int)
 
     # Dòng mới nhất để dự báo tương lai (phiên t hiện tại, dự báo t+N)
     # Cần đảm bảo các cột feature ở dòng này không bị NaN

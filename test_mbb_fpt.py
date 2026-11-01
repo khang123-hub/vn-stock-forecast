@@ -14,7 +14,8 @@ from src.models import (
     split_time_series_data,
     train_regression_models,
     train_classification_model,
-    determine_consensus_signal
+    determine_consensus_signal,
+    predict_latest
 )
 
 
@@ -45,20 +46,21 @@ def test_symbol(symbol: str, n_forward: int = 5, prob_threshold: float = 0.55):
     current_close = float(df["close"].iloc[-1])
     latest_feat = latest_row[feature_cols]
 
-    # Dự báo Forward Return và tính Giá mục tiêu
-    pred_return = float(reg_res["xgb_pipeline"].predict(latest_feat)[0])
-    pred_target_price = current_close * (1.0 + pred_return)
-    exp_pct_change = pred_return * 100.0
-
-    prob_up = float(clf_res["pipeline"].predict_proba(latest_feat)[0, 1])
-
-    # Khuyến nghị đồng thuận
-    consensus = determine_consensus_signal(
-        prob_up=prob_up,
-        exp_return_pct=exp_pct_change,
+    # Gọi predict_latest duy nhất 1 lần
+    pred_info = predict_latest(
+        reg_pipeline=reg_res["xgb_pipeline"],
+        clf_pipeline=clf_res["pipeline"],
+        latest_features=latest_feat,
+        current_price=current_close,
+        horizon=n_forward,
         prob_threshold=prob_threshold,
         min_return_pct=1.5
     )
+
+    pred_target_price = pred_info["predicted_price"]
+    exp_pct_change = pred_info["expected_return_pct"]
+    prob_up = pred_info["prob_up"]
+    consensus = pred_info["consensus"]
 
     print(f"  * Giá đóng cửa hiện tại: {current_close:,.0f} đ")
     print(f"  * Kỳ vọng thay đổi sau {n_forward} phiên: {exp_pct_change:+.2f}%")
@@ -70,7 +72,7 @@ def test_symbol(symbol: str, n_forward: int = 5, prob_threshold: float = 0.55):
     # Kiểm tra tính nhất quán (Assertions)
     # 1. Giá mục tiêu phải khớp chính xác với công thức: current_close * (1 + pred_return)
     expected_calc_price = current_close * (1.0 + exp_pct_change / 100.0)
-    assert abs(pred_target_price - expected_calc_price) < 1.0, "Lỗi tính giá mục tiêu!"
+    assert abs(pred_target_price - expected_calc_price) <= 10.0, "Lỗi tính giá mục tiêu!"
 
     # 2. Tuyệt đối KHÔNG báo MUA khi kỳ vọng thay đổi bị âm (< 0%)
     if exp_pct_change < 0.0:
@@ -102,3 +104,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

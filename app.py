@@ -20,7 +20,8 @@ from src.models import (
     get_feature_importance,
     calibrate_optimal_threshold,
     detect_model_drift,
-    determine_consensus_signal
+    determine_consensus_signal,
+    predict_latest
 )
 from src.backtest import run_backtest
 from src.screener import scan_vn30_market, VN30_TICKERS, VN30_TOP10
@@ -174,7 +175,7 @@ if df_raw is None or len(df_raw) < 60:
 
 # ----------------- HUẤN LUYỆN VÀ ĐÁNH GIÁ MÔ HÌNH -----------------
 @st.cache_resource(show_spinner=False)
-def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool, decay: bool, n_fwd: int):
+def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool, decay: bool, n_fwd: int, version: str = "v3_strict"):
     X_train_r, X_test_r, y_train_r, y_test_r = split_time_series_data(X_df, y_r, train_ratio=0.8)
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X_df, y_c, train_ratio=0.8)
 
@@ -228,33 +229,30 @@ def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool,
 with st.spinner("Đang huấn luyện mô hình Machine Learning định lượng (Ridge, XGBoost)..."):
     model_output = train_and_evaluate_cached(
         X, y_reg, y_clf, feature_cols, df_raw["close"],
-        auto_tune, use_time_decay, n_forward
+        auto_tune, use_time_decay, n_forward, "v3_strict"
     )
 
-# Dự báo cho phiên hiện tại (t) hướng tới (t+N)
+# Dự báo cho phiên hiện tại (t) hướng tới (t+N) - DUY NHẤT 1 LẦN qua predict_latest
 current_close = float(df_raw["close"].iloc[-1])
 current_date = df_raw["date"].iloc[-1].strftime("%d/%m/%Y")
 
 latest_features = latest_row[feature_cols]
 
-# Dự báo tỷ suất sinh lời kỳ vọng (Forward Return)
-pred_return_ridge = float(model_output["reg"]["ridge_pipeline"].predict(latest_features)[0])
-pred_return_xgb = float(model_output["reg"]["xgb_pipeline"].predict(latest_features)[0])
-
-# Quy đổi tỷ suất sinh lời sang mức giá mục tiêu: predicted_price = current_price * (1 + pred_return)
-pred_price_ridge = current_close * (1.0 + pred_return_ridge)
-pred_price_xgb = current_close * (1.0 + pred_return_xgb)
-
-pred_prob_up = float(model_output["clf"]["pipeline"].predict_proba(latest_features)[0, 1])
-exp_pct_change = pred_return_xgb * 100.0
-
-# Áp dụng Quy tắc Đồng thuận Nghiêm ngặt (Strict Consensus Rule)
-consensus = determine_consensus_signal(
-    prob_up=pred_prob_up,
-    exp_return_pct=exp_pct_change,
+pred_info = predict_latest(
+    reg_pipeline=model_output["reg"]["xgb_pipeline"],
+    clf_pipeline=model_output["clf"]["pipeline"],
+    latest_features=latest_features,
+    current_price=current_close,
+    horizon=n_forward,
     prob_threshold=prob_threshold,
     min_return_pct=profit_threshold_pct
 )
+
+# Lấy trực tiếp số liệu từ models.py, tuyệt đối không nhân trùng công thức
+pred_price_xgb = pred_info["predicted_price"]
+exp_pct_change = pred_info["expected_return_pct"]
+pred_prob_up = pred_info["prob_up"]
+consensus = pred_info["consensus"]
 is_buy_signal = consensus["is_buy"]
 
 
