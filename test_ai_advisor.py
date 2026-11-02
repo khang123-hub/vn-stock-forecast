@@ -2,7 +2,7 @@
 Script kiểm thử Module Config & AI Advisor:
 - Quản lý API Key an toàn
 - Graceful Fallback khi không có API Key
-- Cấu trúc dữ liệu báo cáo chuyên sâu
+- Tránh lỗi 404 bằng REST API endpoint v1 chính thức
 """
 
 import sys
@@ -11,12 +11,12 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.config import get_gemini_api_key
-from src.ai_advisor import generate_ai_analysis_report
+from src.ai_advisor import generate_ai_analysis_report, _call_gemini_rest_api
 
 
 def main():
     print("=" * 65)
-    print("🚀 BẮT ĐẦU KIỂM THỬ MODULE CONFIG & AI ADVISOR")
+    print("🚀 BẮT ĐẦU KIỂM THỬ MODULE CONFIG & AI ADVISOR (REST API v1)")
     print("=" * 65)
 
     # 1. Kiểm tra đọc API Key khi không có
@@ -66,7 +66,7 @@ def main():
             print("  --- BẢN BÁO CÁO MẪU TỪ AI ---")
             print(live_res["report"][:300] + "...")
         else:
-            print(f"  ⚠️ Lưu ý kết nối API: {live_res['error']}")
+            print(f"  ⚠️ Kết quả API: {live_res['error']}")
     else:
         print("\n[5] Chưa thiết lập GEMINI_API_KEY thực tế. Hệ thống chạy ở chế độ Graceful Fallback (Không ảnh hưởng đến Machine Learning).")
 
@@ -77,4 +77,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

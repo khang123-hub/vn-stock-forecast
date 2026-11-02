@@ -153,7 +153,7 @@ st.sidebar.subheader("🤖 Trợ lý Phân tích AI")
 gemini_key_input = st.sidebar.text_input(
     "🔑 Gemini API Key (Tùy chọn):",
     type="password",
-    help="Khóa API bảo mật dùng cho báo cáo nhận định chuyên sâu (Gemini 2.5 Flash). Đọc tự động từ biến môi trường GEMINI_API_KEY nếu có."
+    help="Khóa API bảo mật dùng cho báo cáo nhận định chuyên sâu (Gemini 1.5 Flash). Đọc tự động từ biến môi trường GEMINI_API_KEY nếu có."
 )
 active_gemini_key = get_gemini_api_key(gemini_key_input)
 if active_gemini_key:
@@ -352,7 +352,7 @@ if model_output["drift"]["is_regime_shift"]:
     st.warning(model_output["drift"]["warning_message"])
 
 # ----------------- CHUYÊN GIA AI PHÂN TÍCH & NHẬN ĐỊNH CHUYÊN SÂU -----------------
-with st.expander(f"🤖 Chuyên gia AI Phân tích & Nhận định Chuyên sâu: {symbol} (Google Gemini 2.5 Flash)", expanded=bool(active_gemini_key)):
+with st.expander(f"🤖 Chuyên gia AI Phân tích & Nhận định Chuyên sâu: {symbol} (Google Gemini 1.5 Flash)", expanded=bool(active_gemini_key)):
     if active_gemini_key:
         col_ai_btn, col_ai_note = st.columns([1.5, 3])
         with col_ai_btn:
@@ -389,7 +389,7 @@ with st.expander(f"🤖 Chuyên gia AI Phân tích & Nhận định Chuyên sâu
         if report_key in st.session_state and st.session_state[report_key]:
             st.markdown("---")
             st.markdown(st.session_state[report_key])
-            st.caption("ℹ️ *Nhận định do AI Gemini 2.5 Flash sinh tự động dựa trên dữ liệu định lượng, chỉ mang tính chất tham khảo.*")
+            st.caption("ℹ️ *Nhận định do AI Gemini 1.5 Flash sinh tự động dựa trên dữ liệu định lượng, chỉ mang tính chất tham khảo.*")
     else:
         st.info(
             "💡 **Chuyên gia AI Phân tích Chuyên sâu:** Hãy nhập Gemini API Key tại Sidebar bên trái (hoặc cấu hình biến môi trường `GEMINI_API_KEY`) để kích hoạt bản nhận định đầu tư độc quyền từ Giám đốc Định lượng AI. Hệ thống Machine Learning (XGBoost + Ridge) vẫn hoạt động độc lập 100% không bị ảnh hưởng."
