@@ -1,7 +1,7 @@
 """
 Module AI Advisor: Chuyên gia Phân tích & Nhận định Chuyên sâu bằng Google Gemini REST API.
-Sử dụng trực tiếp REST API thuần (requests) tới endpoint chính thức v1 của Google để tránh hoàn toàn lỗi 404:
-url = https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}
+Sử dụng trực tiếp REST API thuần (requests.post) tới endpoint chính thức v1 của Google để tránh hoàn toàn lỗi 404:
+url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
 """
 
 import requests
@@ -11,8 +11,8 @@ from typing import Dict, Any, Optional
 
 def get_ai_advisor_report(api_key: str, prompt_text: str) -> str:
     """
-    Gọi trực tiếp Google Gemini REST API bằng requests tới endpoint chính thức v1.
-    Loại bỏ hoàn toàn thư viện SDK cũ, không còn rủi ro 404 do lệch version.
+    Gọi trực tiếp Google Gemini REST API bằng requests.post tới endpoint chính thức v1.
+    Loại bỏ hoàn toàn thư viện SDK cũ, đóng gói JSON chuẩn: contents -> parts -> text.
     """
     if not api_key or not str(api_key).strip():
         return "Thiếu Gemini API Key. Vui lòng cung cấp khóa API hợp lệ."
@@ -23,11 +23,7 @@ def get_ai_advisor_report(api_key: str, prompt_text: str) -> str:
     data = {
         "contents": [{
             "parts": [{"text": prompt_text}]
-        }],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 1024
-        }
+        }]
     }
 
     try:
