@@ -25,6 +25,8 @@ from src.models import (
 )
 from src.backtest import run_backtest
 from src.screener import scan_vn30_market, VN30_TICKERS, VN30_TOP10
+from src.config import get_gemini_api_key
+from src.ai_advisor import generate_ai_analysis_report
 
 # Thiết lập giao diện trang
 st.set_page_config(
@@ -145,6 +147,19 @@ use_time_decay = st.sidebar.checkbox(
     value=False,
     help="Gán trọng số thời gian phân rã hàm mũ để mô hình thích nghi tốt hơn với biến động gần đây"
 )
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Trợ lý Phân tích AI")
+gemini_key_input = st.sidebar.text_input(
+    "🔑 Gemini API Key (Tùy chọn):",
+    type="password",
+    help="Khóa API bảo mật dùng cho báo cáo nhận định chuyên sâu (Gemini 2.5 Flash). Đọc tự động từ biến môi trường GEMINI_API_KEY nếu có."
+)
+active_gemini_key = get_gemini_api_key(gemini_key_input)
+if active_gemini_key:
+    st.sidebar.success("✅ Đã kết nối Gemini API")
+else:
+    st.sidebar.caption("💡 Nhập key để mở khóa báo cáo Giám đốc Định lượng")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("⚡ **Quy tắc Quant:** No Data Leakage | Chronological Split | Phí 0.15%/chiều | T+2.5 Cycle")
@@ -335,6 +350,50 @@ with rec_col5:
 # Cảnh báo Regime Shift nếu độ chính xác 20 phiên gần nhất giảm sút
 if model_output["drift"]["is_regime_shift"]:
     st.warning(model_output["drift"]["warning_message"])
+
+# ----------------- CHUYÊN GIA AI PHÂN TÍCH & NHẬN ĐỊNH CHUYÊN SÂU -----------------
+with st.expander(f"🤖 Chuyên gia AI Phân tích & Nhận định Chuyên sâu: {symbol} (Google Gemini 2.5 Flash)", expanded=bool(active_gemini_key)):
+    if active_gemini_key:
+        col_ai_btn, col_ai_note = st.columns([1.5, 3])
+        with col_ai_btn:
+            btn_gen_ai = st.button("✨ Tạo Báo cáo Nhận định AI Chuyên sâu", type="primary", use_container_width=True)
+        with col_ai_note:
+            st.caption(f"⚡ Đánh giá chuyên sâu cho mã {symbol} kết hợp ML Pipeline, RSI, MACD, Bollinger Bands & Quản trị R/R.")
+
+        report_key = f"ai_report_{symbol}_{current_date}"
+        if btn_gen_ai:
+            with st.spinner(f"Giám đốc Định lượng AI đang phân tích toàn diện mã {symbol}..."):
+                ai_metrics = {
+                    "symbol": symbol,
+                    "current_price": current_close,
+                    "predicted_price": pred_price_xgb,
+                    "expected_return_pct": exp_pct_change,
+                    "prob_up_pct": pred_prob_up * 100.0,
+                    "horizon": n_forward,
+                    "signal_badge": consensus["signal_badge"],
+                    "rsi": float(latest_row["rsi_14"].iloc[-1]) if "rsi_14" in latest_row else 50.0,
+                    "macd_diff": float(latest_row["macd_diff"].iloc[-1]) if "macd_diff" in latest_row else 0.0,
+                    "bb_high": float(latest_row["bb_high"].iloc[-1]) if "bb_high" in latest_row else current_close * 1.05,
+                    "bb_low": float(latest_row["bb_low"].iloc[-1]) if "bb_low" in latest_row else current_close * 0.95,
+                    "support_price": float(df_raw["low"].tail(20).min()),
+                    "resistance_price": float(df_raw["high"].tail(20).max()),
+                    "win_rate": 50.0,
+                    "max_drawdown": -15.0
+                }
+                ai_result = generate_ai_analysis_report(active_gemini_key, ai_metrics)
+                if ai_result["success"]:
+                    st.session_state[report_key] = ai_result["report"]
+                else:
+                    st.error(f"Lỗi gọi Gemini API: {ai_result['error']}")
+
+        if report_key in st.session_state and st.session_state[report_key]:
+            st.markdown("---")
+            st.markdown(st.session_state[report_key])
+            st.caption("ℹ️ *Nhận định do AI Gemini 2.5 Flash sinh tự động dựa trên dữ liệu định lượng, chỉ mang tính chất tham khảo.*")
+    else:
+        st.info(
+            "💡 **Chuyên gia AI Phân tích Chuyên sâu:** Hãy nhập Gemini API Key tại Sidebar bên trái (hoặc cấu hình biến môi trường `GEMINI_API_KEY`) để kích hoạt bản nhận định đầu tư độc quyền từ Giám đốc Định lượng AI. Hệ thống Machine Learning (XGBoost + Ridge) vẫn hoạt động độc lập 100% không bị ảnh hưởng."
+        )
 
 
 # ----------------- TABS GIAO DIỆN CHÍNH (4 TABS) -----------------
