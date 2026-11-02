@@ -1,11 +1,92 @@
 """
 Module AI Advisor: Chuyên gia Phân tích & Nhận định Chuyên sâu bằng Google Gemini API.
-Sử dụng REST API thuần requests để đảm bảo độ tin cậy và không xung đột thư viện.
+Tích hợp cơ chế Smart Fallback và Dynamic Model Discovery để loại bỏ triệt để lỗi 404 Not Found.
 """
 
-from typing import Dict, Any, Optional
-import json
+from typing import Dict, Any, List, Optional, Tuple
 import requests
+
+# Danh sách các model theo thứ tự ưu tiên (chuẩn mới nhất đến các model dự phòng phổ biến)
+CANDIDATE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-flash-002",
+    "gemini-pro"
+]
+
+
+def _call_gemini_endpoint(
+    api_key: str,
+    model_name: str,
+    prompt: str,
+    api_version: str = "v1beta"
+) -> Tuple[bool, int, str]:
+    """
+    Gọi trực tiếp endpoint generateContent của Google Gemini.
+    Trả về (is_success, status_code, result_text_or_error)
+    """
+    clean_model = model_name.replace("models/", "").strip()
+    url = f"https://generativelanguage.googleapis.com/{api_version}/models/{clean_model}:generateContent?key={api_key.strip()}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1024
+        }
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        status_code = response.status_code
+
+        if status_code == 200:
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return True, 200, parts[0].get("text", "")
+            return False, 200, "Phản hồi API không có nội dung văn bản."
+
+        # Trích xuất thông báo lỗi nếu có
+        try:
+            err_json = response.json()
+            err_msg = err_json.get("error", {}).get("message", response.text)
+        except Exception:
+            err_msg = response.text
+        return False, status_code, err_msg
+    except Exception as e:
+        return False, 500, f"Exception: {str(e)}"
+
+
+def _discover_active_models(api_key: str) -> List[str]:
+    """
+    Tự động truy vấn danh sách model đang khả dụng cho API Key hiện tại (ListModels).
+    Loại bỏ hoàn toàn trường hợp không biết tên model nào được hỗ trợ.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key.strip()}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            valid_models = []
+            for item in data.get("models", []):
+                methods = item.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    m_name = item.get("name", "").replace("models/", "").strip()
+                    if m_name:
+                        valid_models.append(m_name)
+            return valid_models
+    except Exception:
+        pass
+    return []
 
 
 def generate_ai_analysis_report(
@@ -15,6 +96,7 @@ def generate_ai_analysis_report(
 ) -> Dict[str, Any]:
     """
     Gửi các thông số định lượng vào Google Gemini API để tạo báo cáo nhận định chuyên sâu.
+    Bảo đảm không bao giờ crash app khi gặp lỗi 404 với cơ chế đa tầng fallback.
     """
     if not api_key or not api_key.strip():
         return {
@@ -79,51 +161,59 @@ Hãy viết một bản nhận định đầu tư ngắn gọn, trực diện, g
 - **Lời khuyên phân bổ tỷ trọng:** ...
 """
 
-    # Danh sách các model fallback theo thứ tự ưu tiên
-    candidate_models = [model_name, "gemini-2.0-flash", "gemini-1.5-flash"]
-    last_error = ""
+    # Danh sách các model cần thử (ưu tiên model_name truyền vào trước)
+    models_to_try = [model_name] + [m for m in CANDIDATE_MODELS if m != model_name]
+    last_error_msg = ""
 
-    for target_model in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 1024
-            }
-        }
-
+    # Tầng 1: Thử lần lượt các candidate model trên v1beta
+    for candidate in models_to_try:
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=25)
-            if response.status_code == 200:
-                data = response.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    first_cand = candidates[0]
-                    content_parts = first_cand.get("content", {}).get("parts", [])
-                    if content_parts:
-                        report_text = content_parts[0].get("text", "")
-                        return {
-                            "success": True,
-                            "report": report_text,
-                            "model_used": target_model
-                        }
+            success, code, res = _call_gemini_endpoint(api_key, candidate, prompt, api_version="v1beta")
+            if success:
+                return {
+                    "success": True,
+                    "report": res,
+                    "model_used": candidate
+                }
+            if code == 404:
+                # Nếu 404, tự động chuyển sang model dự phòng kế tiếp
+                last_error_msg = f"Model '{candidate}' không tìm thấy (404), đang thử model dự phòng..."
+                continue
             else:
-                try:
-                    err_json = response.json()
-                    err_msg = err_json.get("error", {}).get("message", response.text)
-                except Exception:
-                    err_msg = response.text
-                last_error = f"API Error ({response.status_code}): {err_msg}"
+                last_error_msg = f"Lỗi API ({code}): {res}"
         except Exception as e:
-            last_error = f"Request Exception: {str(e)}"
+            last_error_msg = f"Lỗi kết nối model {candidate}: {str(e)}"
+            continue
+
+    # Tầng 2: Nếu các model trên v1beta đều bị 404, thử trên endpoint v1 với gemini-1.5-flash và gemini-pro
+    for candidate in ["gemini-1.5-flash", "gemini-pro"]:
+        try:
+            success, code, res = _call_gemini_endpoint(api_key, candidate, prompt, api_version="v1")
+            if success:
+                return {
+                    "success": True,
+                    "report": res,
+                    "model_used": f"{candidate} (v1)"
+                }
+        except Exception:
+            pass
+
+    # Tầng 3: Dynamic Discovery - Tự động hỏi Google API xem tài khoản có quyền truy cập model nào
+    try:
+        active_models = _discover_active_models(api_key)
+        for disc_model in active_models:
+            if disc_model not in models_to_try:
+                success, code, res = _call_gemini_endpoint(api_key, disc_model, prompt, api_version="v1beta")
+                if success:
+                    return {
+                        "success": True,
+                        "report": res,
+                        "model_used": disc_model
+                    }
+    except Exception:
+        pass
 
     return {
         "success": False,
-        "error": last_error or "Không thể kết nối đến Gemini API. Vui lòng kiểm tra lại API Key và kết nối mạng."
+        "error": f"Không tìm thấy model Gemini khả dụng cho API Key này ({last_error_msg}). Vui lòng kiểm tra lại quyền hạn của khóa API tại Google AI Studio."
     }

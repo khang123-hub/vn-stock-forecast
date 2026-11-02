@@ -38,3 +38,4 @@ def get_gemini_api_key(user_input_key: Optional[str] = None) -> Optional[str]:
         return env_key.strip()
 
     return None
+
