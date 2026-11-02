@@ -65,6 +65,7 @@ streamlit run app.py
 
 ## 📊 Các Tính năng Chính trên Dashboard (4 Tabs)
 - **Hộp Khuyến nghị Định lượng:** Giá hiện tại, Giá dự báo sau $N$ phiên, Kỳ vọng tăng trưởng (%), Xác suất tăng giá, và Badge tín hiệu **🚀 MUA** hoặc **⏳ QUAN SÁT**.
+- **Smart Auto-Refresh Data [MỚI]:** Tự động phát hiện khi file cache thiếu phiên hôm nay và sau giờ đóng cửa (14h45) để tự động cập nhật nến mới nhất; nút bấm **`🔄 Làm mới dữ liệu (Clear Cache & Fetch Latest)`** ngay đầu Sidebar giúp ép xóa cache và tải lại ngay tức thì.
 - **Tab 1: Biểu đồ Kỹ thuật Tương tác:** Biểu đồ Nến (Candlestick) tích hợp SMA 20, SMA 50, dải Bollinger Bands, Khối lượng kèm MA20 Volume, và Động lượng RSI 14 (vùng 30-70).
 - **Tab 2: Dự báo & Đánh giá Mô hình (KPIs):**
   - So sánh Ridge Regression vs XGBoost Regressor: MAE, RMSE, MAPE (%), $R^2$.

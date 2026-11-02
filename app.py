@@ -85,6 +85,21 @@ st.markdown("""
 st.sidebar.image("https://img.icons8.com/fluency/96/bullish.png", width=64)
 st.sidebar.title("Cấu hình Định lượng")
 
+# Nút làm mới dữ liệu & xóa cache ngay đầu Sidebar
+btn_clear_and_fetch = st.sidebar.button(
+    "🔄 Làm mới dữ liệu (Clear Cache & Fetch Latest)",
+    type="primary",
+    use_container_width=True,
+    help="Xóa toàn bộ cache tạm và ép tải dữ liệu giá đóng cửa mới nhất của ngày hôm nay."
+)
+
+if btn_clear_and_fetch:
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    force_reload = True
+else:
+    force_reload = False
+
 symbol = st.sidebar.text_input("Mã Cổ Phiếu Cá Nhân (Phân tích sâu)", value="FPT").upper().strip()
 
 col_date1, col_date2 = st.sidebar.columns(2)
@@ -131,14 +146,12 @@ use_time_decay = st.sidebar.checkbox(
     help="Gán trọng số thời gian phân rã hàm mũ để mô hình thích nghi tốt hơn với biến động gần đây"
 )
 
-force_reload = st.sidebar.button("🔄 Làm mới dữ liệu mã hiện tại")
-
 st.sidebar.markdown("---")
 st.sidebar.caption("⚡ **Quy tắc Quant:** No Data Leakage | Chronological Split | Phí 0.15%/chiều | T+2.5 Cycle")
 
 
-# ----------------- HÀM TẢI VÀ CHUẨN BỊ DỮ LIỆU CÓ CACHE -----------------
-@st.cache_data(show_spinner=False)
+# ----------------- HÀM TẢI VÀ CHUẨN BỊ DỮ LIỆU CÓ CACHE (TTL 15 PHÚT) -----------------
+@st.cache_data(ttl=900, show_spinner=False)
 def get_processed_data(sym: str, start: str, end: str, n_fwd: int, p_thresh: float, reload: bool):
     df_raw = load_stock_data(
         symbol=sym,
@@ -158,11 +171,19 @@ def get_processed_data(sym: str, start: str, end: str, n_fwd: int, p_thresh: flo
     return df_raw, X, y_reg, y_clf, latest_row, feature_cols
 
 
+# Xử lý end_date để đảm bảo nến hôm nay được lấy đầy đủ
+req_end = pd.to_datetime(end_date)
+now_today = datetime.now().date()
+if req_end.date() >= now_today:
+    fetch_end_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+else:
+    fetch_end_str = req_end.strftime("%Y-%m-%d")
+
 with st.spinner(f"Đang tải và xử lý dữ liệu cho cổ phiếu {symbol}..."):
     df_raw, X, y_reg, y_clf, latest_row, feature_cols = get_processed_data(
         symbol,
         start_date.strftime("%Y-%m-%d"),
-        end_date.strftime("%Y-%m-%d"),
+        fetch_end_str,
         n_forward,
         profit_threshold_pct,
         force_reload
@@ -173,8 +194,8 @@ if df_raw is None or len(df_raw) < 60:
     st.stop()
 
 
-# ----------------- HUẤN LUYỆN VÀ ĐÁNH GIÁ MÔ HÌNH -----------------
-@st.cache_resource(show_spinner=False)
+# ----------------- HUẤN LUYỆN VÀ ĐÁNH GIÁ MÔ HÌNH (TTL 15 PHÚT) -----------------
+@st.cache_resource(ttl=900, show_spinner=False)
 def train_and_evaluate_cached(X_df, y_r, y_c, f_cols, closes_series, tune: bool, decay: bool, n_fwd: int, version: str = "v3_strict"):
     X_train_r, X_test_r, y_train_r, y_test_r = split_time_series_data(X_df, y_r, train_ratio=0.8)
     X_train_c, X_test_c, y_train_c, y_test_c = split_time_series_data(X_df, y_c, train_ratio=0.8)

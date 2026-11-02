@@ -1,6 +1,6 @@
 """
 Module Data Loader: Tải, làm sạch và lưu cache dữ liệu OHLCV chứng khoán Việt Nam.
-Tuân thủ tính tương thích ngược với các phiên bản vnstock, yfinance fallback và offline fallback.
+Tích hợp cơ chế Smart Auto-Refresh Cache và xử lý triệt để lỗi exclusive end_date của yfinance.
 """
 
 import os
@@ -44,7 +44,6 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     missing = [c for c in required if c not in df.columns]
     if missing:
-        # Nếu thiếu close nhưng có adj close hoặc ngược lại
         for c in missing:
             if c in ["open", "high", "low"] and "close" in df.columns:
                 df[c] = df["close"]
@@ -71,7 +70,6 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _fetch_from_vnstock(symbol: str, start_date: str, end_date: str) -> pd.DataFrame | None:
     """Thử lấy dữ liệu từ vnstock theo nhiều phiên bản API khác nhau."""
     try:
-        # Thử API vnstock phiên bản mới (>=0.3 / 3.x)
         from vnstock import Vnstock
         stock = Vnstock().stock(symbol=symbol.upper(), source="VCI")
         df = stock.quote.history(start=start_date, end=end_date)
@@ -81,7 +79,6 @@ def _fetch_from_vnstock(symbol: str, start_date: str, end_date: str) -> pd.DataF
         pass
 
     try:
-        # Thử API vnstock 0.2.x cũ
         from vnstock import stock_historical_data
         df = stock_historical_data(
             symbol=symbol.upper(),
@@ -96,7 +93,6 @@ def _fetch_from_vnstock(symbol: str, start_date: str, end_date: str) -> pd.DataF
         pass
 
     try:
-        # Thử module Vnstock3 hoặc vnstock.historical_quote
         import vnstock
         if hasattr(vnstock, "stock"):
             s = vnstock.stock(symbol=symbol.upper())
@@ -110,16 +106,30 @@ def _fetch_from_vnstock(symbol: str, start_date: str, end_date: str) -> pd.DataF
 
 
 def _fetch_from_yfinance(symbol: str, start_date: str, end_date: str) -> pd.DataFrame | None:
-    """Fallback 1: Tải dữ liệu qua Yahoo Finance với hậu tố .VN (ví dụ: FPT.VN)."""
+    """
+    Fallback 1: Tải dữ liệu qua Yahoo Finance với hậu tố .VN (ví dụ: FPT.VN, MBB.VN).
+    Khắc phục tính chất exclusive của tham số end trong yfinance bằng cách cộng thêm ngày hoặc dùng period='5y'.
+    """
     try:
         import yfinance as yf
         ticker_sym = f"{symbol.upper()}.VN"
         yf_ticker = yf.Ticker(ticker_sym)
-        df = yf_ticker.history(start=start_date, end=end_date)
+
+        # yfinance end là exclusive, cần cộng thêm ít nhất 1-2 ngày để lấy trọn vẹn phiên hôm nay
+        end_dt = pd.to_datetime(end_date)
+        inclusive_end = (end_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+
+        # Thử lấy theo khoảng thời gian mở rộng
+        df = yf_ticker.history(start=start_date, end=inclusive_end)
         if df is not None and not df.empty:
             return df
-    except Exception:
-        pass
+
+        # Nếu không có kết quả, thử lấy theo period="5y" (Yahoo Finance tự tính nến mới nhất)
+        df = yf_ticker.history(period="5y")
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        print(f"[Data Loader] Lỗi yfinance cho {symbol}: {e}")
     return None
 
 
@@ -134,7 +144,6 @@ def _generate_synthetic_stock_data(symbol: str, start_date: str, end_date: str) 
     n = len(dates)
     np.random.seed(abs(hash(symbol)) % (2**32))
 
-    # Base price theo mã
     symbol_upper = symbol.upper()
     base_price = 100000.0 if "FPT" in symbol_upper else (
         90000.0 if "VCB" in symbol_upper else (
@@ -171,36 +180,68 @@ def load_stock_data(
 ) -> pd.DataFrame:
     """
     Tải dữ liệu OHLCV của cổ phiếu:
-    1. Kiểm tra cache CSV tại data/{symbol}_history.csv
-    2. Gọi vnstock API
-    3. Fallback yfinance (.VN)
-    4. Fallback Synthetic data nếu offline hoàn toàn
+    - Cơ chế Smart Auto-Refresh: Tự động phát hiện khi cache thiếu nến ngày hôm nay để tải mới.
+    - Sửa lỗi exclusive end_date của Yahoo Finance để luôn cập nhật phiên mới nhất hôm nay.
+    - Ghi đè cập nhật vào file cache CSV tại data/{symbol}_history.csv.
     """
     symbol = symbol.upper().strip()
+    now = datetime.now()
+
+    # Nếu không truyền end_date, mặc định lấy đến ngày mai để chắc chắn lấy nến hôm nay (inclusive)
     if end_date is None:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        # Nếu truyền end_date là ngày hôm nay, cộng thêm 1 ngày cho API yfinance
+        req_end_dt = pd.to_datetime(end_date)
+        if req_end_dt.date() >= now.date():
+            end_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache_file = os.path.join(CACHE_DIR, f"{symbol}_history.csv")
 
-    # 1. Đọc từ Cache nếu có và không ép buộc tải lại
+    # Kiểm tra tính hợp lệ và độ mới của Cache (Smart Auto-Refresh Cache)
+    needs_fetch = False
+    cached_df = None
+
     if use_cache and not force_reload and os.path.exists(cache_file):
         try:
-            df = pd.read_csv(cache_file)
-            df = _standardize_columns(df)
-            if not df.empty and len(df) > 50:
-                return df
-        except Exception:
-            pass
+            cached_df = pd.read_csv(cache_file)
+            cached_df = _standardize_columns(cached_df)
+            if not cached_df.empty and len(cached_df) > 50:
+                last_trade_date = pd.to_datetime(cached_df["date"].iloc[-1]).date()
+                today_date = now.date()
 
-    # 2. Thử lấy từ vnstock
+                # Nếu là ngày làm việc (Thứ 2 - Thứ 6)
+                is_weekday = (now.weekday() < 5)
+                # Đã qua giờ đóng cửa khớp lệnh định kỳ ATC (sau 14h45)
+                is_after_market_close = (now.hour > 14 or (now.hour == 14 and now.minute >= 45))
+
+                # Nếu cache chưa có nến ngày hôm nay mà thị trường đã mở cửa / đã đóng cửa:
+                if is_weekday and last_trade_date < today_date and (now.hour >= 9):
+                    needs_fetch = True
+                else:
+                    needs_fetch = False
+            else:
+                needs_fetch = True
+        except Exception:
+            needs_fetch = True
+    else:
+        needs_fetch = True
+
+    # Nếu cache còn mới và không cần tải lại
+    if not needs_fetch and cached_df is not None:
+        start_dt = pd.to_datetime(start_date)
+        return cached_df[cached_df["date"] >= start_dt].reset_index(drop=True)
+
+    # Thực hiện tải dữ liệu mới từ API
+    # 1. Thử lấy từ vnstock
     raw_df = _fetch_from_vnstock(symbol, start_date, end_date)
 
-    # 3. Thử lấy từ yfinance nếu vnstock không thành công
+    # 2. Thử lấy từ yfinance (hỗ trợ đuôi .VN và exclusive end_date fix)
     if raw_df is None or raw_df.empty:
         raw_df = _fetch_from_yfinance(symbol, start_date, end_date)
 
-    # 4. Fallback dữ liệu mẫu nếu không có mạng / bị chặn API
+    # 3. Fallback dữ liệu mẫu nếu mất mạng hoàn toàn
     is_mock = False
     if raw_df is None or raw_df.empty:
         raw_df = _generate_synthetic_stock_data(symbol, start_date, end_date)
@@ -208,24 +249,24 @@ def load_stock_data(
 
     df = _standardize_columns(raw_df)
 
-    # Lọc theo khoảng ngày yêu cầu
+    # Lọc từ ngày bắt đầu
     start_dt = pd.to_datetime(start_date)
-    end_dt = pd.to_datetime(end_date)
-    df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)].reset_index(drop=True)
+    df = df[df["date"] >= start_dt].reset_index(drop=True)
 
-    # Lưu cache nếu không phải rỗng
+    # Lưu và cập nhật cache nếu có dữ liệu hợp lệ
     if not df.empty:
         df.to_csv(cache_file, index=False)
+        last_date_str = df["date"].iloc[-1].strftime("%d/%m/%Y")
         if is_mock:
-            print(f"[Data Loader] Cảnh báo: Sử dụng dữ liệu mô phỏng do giới hạn kết nối API cho {symbol}.")
+            print(f"[Data Loader] Cảnh báo: Sử dụng dữ liệu mô phỏng cho {symbol}.")
         else:
-            print(f"[Data Loader] Đã tải thành công {len(df)} phiên giao dịch cho {symbol} và lưu cache.")
+            print(f"[Data Loader] Đã cập nhật thành công {len(df)} phiên cho {symbol} (Phiên gần nhất: {last_date_str}) và lưu cache.")
 
     return df
 
 
 if __name__ == "__main__":
-    test_df = load_stock_data("FPT", start_date="2020-01-01")
-    print(test_df.head())
-    print(f"Tổng số phiên: {len(test_df)}")
-
+    test_df = load_stock_data("FPT", start_date="2020-01-01", force_reload=True)
+    print("\n2 Phiên giao dịch gần nhất:")
+    print(test_df.tail(2))
+    print(f"\nTổng số phiên: {len(test_df)}")
